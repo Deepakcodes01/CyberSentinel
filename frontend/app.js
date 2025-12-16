@@ -9,11 +9,20 @@ async function scanUrl() {
 
   resultBox.innerText = "Scanning...";
 
+  // ✅ LIVE BACKEND URL
+  const API_BASE = "https://cybersentinel-production-ed46.up.railway.app";
+
   try {
     const response = await fetch(
-      "http://127.0.0.1:8000/scan?url=" + encodeURIComponent(url)
+      `${API_BASE}/scan?url=${encodeURIComponent(url)}`
     );
+
+    if (!response.ok) {
+      throw new Error("Server error");
+    }
+
     const data = await response.json();
+
     resultBox.innerText = `
 Domain: ${data.domain}
 Trust Status: ${data.trust_status}
