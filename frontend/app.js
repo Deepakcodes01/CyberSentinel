@@ -9,7 +9,7 @@ async function scanUrl() {
 
   resultBox.innerText = "Scanning...";
 
-  // ✅ LIVE BACKEND URL
+  
   const API_BASE = "https://cybersentinel-production-ed46.up.railway.app";
 
   try {
@@ -18,7 +18,7 @@ async function scanUrl() {
     );
 
     if (!response.ok) {
-      throw new Error("Server error");
+      throw new Error("Backend error");
     }
 
     const data = await response.json();
