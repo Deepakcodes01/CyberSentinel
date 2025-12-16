@@ -3,6 +3,7 @@ import dns.resolver
 import requests
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 
 
 def _safe_date(x):
@@ -288,3 +289,45 @@ def format_dns_readable(dns_data: Dict[str, Any]) -> str:
     section("MX Records", dns_data.get("MX"))
     section("NS Records", dns_data.get("NS"))
     return "\n".join(lines)
+
+    # 1. Syntax validation
+    def is_valid_url_syntax(url: str) -> bool:
+        if not url:
+            return False
+        if " " in url:
+            return False
+    
+        parsed = urlparse(url if "://" in url else "http://" + url)
+        return bool(parsed.netloc and "." in parsed.netloc)
+# 2. Extract domain
+    def extract_domain(url: str) -> str:
+        parsed = urlparse(url if "://" in url else "http://" + url)
+        return parsed.hostname.lower() if parsed.hostname else ""
+
+# ---------------------------
+# 3. DNS existence check
+# ---------------------------
+    def domain_exists(domain: str) -> bool:
+        try:
+            dns.resolver.resolve(domain, "A")
+            return True
+        except Exception:
+            return False
+        # ---------------------------
+# 4. HTTP accessibility check (soft)
+# ---------------------------
+    def is_http_accessible(url: str) -> bool:
+        if not urlparse(url).scheme:
+            url = "http://" + url
+    
+        try:
+            response = requests.head(
+                url,
+                allow_redirects=True,
+                timeout=5,
+                headers={"User-Agent": "CyberSentinelAI/1.0"}
+            )
+            return response.status_code < 500
+        except requests.exceptions.RequestException:
+            return False
+        
