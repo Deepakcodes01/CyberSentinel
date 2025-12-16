@@ -1,5 +1,6 @@
 import tldextract
 from urllib.parse import urlparse
+from src.db.supabase_client import supabase
 
 from src.model_loader import predict_url
 from src.utils import (
@@ -74,6 +75,19 @@ class URLScannerService:
             risk_level, risk_score = "HIGH", 0.9
             verdict = "Possible malware distribution."
             trust_status = "Untrusted"
+            
+
+    def save_scan(url: str, result: dict):
+        try:
+            supabase.table("url_scans").insert({
+                "url": url,
+                "domain": result.get("domain"),
+                "risk_score": result.get("risk_score"),
+                "trust_status": result.get("trust_status"),
+                "url_type": result.get("url_type"),
+            }).execute()
+        except Exception as e:
+            print("⚠️ Failed to save scan:", e)
 
         return {
             "domain": domain,
