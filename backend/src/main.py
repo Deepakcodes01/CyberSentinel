@@ -9,6 +9,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
+@app.get("/")
+def root():
+    return {"status": "CyberSentinel AI backend is running"}
+
 #CORS
 app.add_middleware(
     CORSMiddleware,
