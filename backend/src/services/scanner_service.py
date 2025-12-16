@@ -15,6 +15,18 @@ from src.utils import (
     is_http_accessible,
 )
 
+     def save_scan(url: str, result: dict):
+            try:
+                supabase.table("url_scans").insert({
+                    "url": url,
+                    "domain": result.get("domain"),
+                    "risk_score": result.get("risk_score"),
+                    "trust_status": result.get("trust_status"),
+                    "url_type": result.get("url_type"),
+                }).execute()
+            except Exception as e:
+                print("⚠️ Failed to save scan:", e)
+
 class URLScannerService:
     def __init__(self, popular_domains: set):
         self.popular_domains = popular_domains
@@ -77,17 +89,7 @@ class URLScannerService:
             trust_status = "Untrusted"
             
 
-    def save_scan(url: str, result: dict):
-        try:
-            supabase.table("url_scans").insert({
-                "url": url,
-                "domain": result.get("domain"),
-                "risk_score": result.get("risk_score"),
-                "trust_status": result.get("trust_status"),
-                "url_type": result.get("url_type"),
-            }).execute()
-        except Exception as e:
-            print("⚠️ Failed to save scan:", e)
+   
 
         return {
             "domain": domain,
