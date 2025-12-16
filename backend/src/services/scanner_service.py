@@ -9,6 +9,10 @@ from src.utils import (
     calculate_domain_age_days,
     explain_whois,
     format_dns_readable,
+    is_valid_url_syntax,
+    extract_domain,
+    domain_exists,
+    is_http_accessible,
 )
 from src.db.supabase_client import supabase
 
