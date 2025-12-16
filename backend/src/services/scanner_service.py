@@ -1,5 +1,4 @@
 import torch
-import tldextract
 from urllib.parse import urlparse
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
@@ -42,21 +41,41 @@ class URLScannerService:
         self.popular_domains = popular_domains
 
     def scan(self, url: str) -> dict:
-        # ----------------------------
-        # Normalize URL
-        # ----------------------------
+        # ---------------------------
+        # 1. Normalize URL
+        # ---------------------------
         if "://" not in url:
             url = "http://" + url
 
-        parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().strip()
+        # ---------------------------
+        # 2. URL syntax validation
+        # ---------------------------
+        if not is_valid_url_syntax(url):
+            return {
+                "error": "Invalid URL format. Please enter a valid URL."
+            }
 
-        ext = tldextract.extract(host)
-        domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else ext.domain
+        # ---------------------------
+        # 3. Extract domain
+        # ---------------------------
+        domain = extract_domain(url)
 
-        # ----------------------------
-        # Trusted domain shortcut
-        # ----------------------------
+        # ---------------------------
+        # 4. DNS existence validation
+        # ---------------------------
+        if not domain_exists(domain):
+            return {
+                "error": "Domain does not exist or is not reachable."
+            }
+
+        # ---------------------------
+        # 5. HTTP accessibility (soft check)
+        # ---------------------------
+        http_reachable = is_http_accessible(url)
+
+        # ---------------------------
+        # 6. Trusted domain shortcut
+        # ---------------------------
         if domain in self.popular_domains:
             return {
                 "domain": domain,
@@ -64,21 +83,22 @@ class URLScannerService:
                 "url_type": "benign",
                 "risk_level": "LOW",
                 "risk_score": 0.0,
+                "reachable": http_reachable,
                 "verdict": "This is a trusted and well-established domain.",
-                "whois_summary": "This domain belongs to a widely trusted organization.",
-                "dns_summary": "Standard DNS records found.",
+                "whois_summary": "Trusted domain. WHOIS lookup skipped.",
+                "dns_summary": "Standard DNS records detected.",
             }
 
-        # ----------------------------
-        # WHOIS + DNS analysis
-        # ----------------------------
+        # ---------------------------
+        # 7. WHOIS + DNS analysis
+        # ---------------------------
         whois_data = get_whois_info(domain)
         dns_data = dns_lookup(domain)
         age_days = calculate_domain_age_days(whois_data.get("creation_date"))
 
-        # ----------------------------
-        # AI MULTI-CLASS PREDICTION
-        # ----------------------------
+        # ---------------------------
+        # 8. AI MULTI-CLASS PREDICTION
+        # ---------------------------
         inputs = tokenizer(url, return_tensors="pt", truncation=True)
         with torch.no_grad():
             outputs = model(**inputs)
@@ -89,54 +109,54 @@ class URLScannerService:
 
         confidence = torch.softmax(logits, dim=1)[0][pred_class_id].item()
 
-        # ----------------------------
-        # Risk mapping (human logic)
-        # ----------------------------
+        # ---------------------------
+        # 9. Risk mapping
+        # ---------------------------
+        trust_status = "Untrusted"
+
         if url_type == "benign":
-            trust_status = "Trusted"
             risk_level = "LOW"
             risk_score = 0.1
             verdict = "This URL appears to be safe."
 
         elif url_type == "phishing":
-            trust_status = "Untrusted"
             risk_level = "HIGH"
             risk_score = 0.8
             verdict = "This URL is likely a phishing attempt impersonating a trusted brand."
 
         elif url_type == "defacement":
-            trust_status = "Untrusted"
             risk_level = "MEDIUM"
             risk_score = 0.6
             verdict = "This URL may be associated with website defacement."
 
         else:  # malware
-            trust_status = "Untrusted"
             risk_level = "HIGH"
             risk_score = 0.9
             verdict = "This URL may distribute malware and should be avoided."
 
-        # ----------------------------
-        # DEBUG / DEMO OUTPUT (terminal)
-        # ----------------------------
+        # ---------------------------
+        # DEBUG / DEMO OUTPUT
+        # ---------------------------
         print("\n🤖 AI MODEL OUTPUT")
-        print("-" * 35)
+        print("-" * 40)
         print(f"URL        : {url}")
         print(f"Domain     : {domain}")
         print(f"Prediction : {url_type}")
         print(f"Confidence : {confidence:.4f}")
+        print(f"Reachable  : {http_reachable}")
         print(f"Risk Level : {risk_level}")
-        print("-" * 35)
+        print("-" * 40)
 
-        # ----------------------------
-        # Final response (frontend-ready)
-        # ----------------------------
+        # ---------------------------
+        # Final response
+        # ---------------------------
         return {
             "domain": domain,
             "trust_status": trust_status,
             "url_type": url_type,
             "risk_level": risk_level,
             "risk_score": round(risk_score, 2),
+            "reachable": http_reachable,
             "verdict": verdict,
             "whois_summary": explain_whois(whois_data, age_days),
             "dns_summary": format_dns_readable(dns_data),
