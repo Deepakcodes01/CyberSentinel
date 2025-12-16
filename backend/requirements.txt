@@ -16,4 +16,4 @@ python-whois
 dnspython
 requests
 tldextract
-supabase
+supabase==2.3.4
