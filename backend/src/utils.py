@@ -4,6 +4,8 @@ import requests
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
+from src.utils import is_valid_url_syntax
+
 
 
 def _safe_date(x):
