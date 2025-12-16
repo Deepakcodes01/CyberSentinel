@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.services.scanner_service import URLScannerService
+from src.services.scanner_service import URLScannerService, save_scan
+
 from src.repositories.popular_repo import PopularDomainRepository
 
 # =========================================================
