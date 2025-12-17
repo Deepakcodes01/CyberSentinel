@@ -1,115 +1,57 @@
 import whois
 import dns.resolver
 import requests
-import socket
+import tldextract
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 
 
-# =====================================================
-# Helpers
-# =====================================================
-
-def _safe_date(x):
-    if x is None:
-        return None
-    if isinstance(x, list):
-        x = x[0]
-    if isinstance(x, str):
-        try:
-            return datetime.fromisoformat(x)
-        except Exception:
-            return None
-    if isinstance(x, datetime):
-        return x
-    return None
-
-
-# =====================================================
-# URL VALIDATION (WHAT YOUR BOSS ASKED FOR)
-# =====================================================
-
+# ----------------------------
+# URL SYNTAX VALIDATION
+# ----------------------------
 def is_valid_url_syntax(url: str) -> bool:
     if not url or " " in url:
         return False
-    parsed = urlparse(url if "://" in url else "http://" + url)
-    return bool(parsed.netloc and "." in parsed.netloc)
 
-
-def extract_domain(url: str) -> str:
-    parsed = urlparse(url if "://" in url else "http://" + url)
-    return parsed.hostname.lower() if parsed.hostname else ""
-
-
-def domain_exists(domain: str) -> bool:
-    try:
-        socket.gethostbyname(domain)
-        return True
-    except Exception:
-        return False
-
-
-def is_http_accessible(url: str) -> bool:
-    if not urlparse(url).scheme:
+    if "://" not in url:
         url = "http://" + url
-    try:
-        r = requests.head(
-            url,
-            allow_redirects=True,
-            timeout=5,
-            headers={"User-Agent": "CyberSentinelAI/1.0"}
-        )
-        return r.status_code < 500
-    except requests.RequestException:
-        return False
+
+    parsed = urlparse(url)
+    return bool(parsed.hostname and "." in parsed.hostname)
 
 
-# =====================================================
-# WHOIS + RDAP
-# =====================================================
+# ----------------------------
+# CANONICAL DOMAIN EXTRACTION
+# ----------------------------
+def extract_domain(url: str) -> str:
+    """
+    cnn.com
+    www.cnn.com
+    https://www.cnn.com/news
+    → cnn.com
+    """
+    if not url:
+        return ""
 
-def rdap_lookup(domain: str) -> Dict[str, Any]:
-    try:
-        r = requests.get(f"https://rdap.org/domain/{domain}", timeout=8)
-        if r.status_code != 200:
-            return {"error": "RDAP lookup failed"}
-        j = r.json()
-        return {
-            "domain_name": j.get("ldhName"),
-            "creation_date": _safe_date(j.get("events", [{}])[0].get("eventDate")),
-            "registrar": None,
-            "owner": None,
-            "name_servers": [n.get("ldhName") for n in j.get("nameservers", [])],
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    if "://" not in url:
+        url = "http://" + url
 
+    parsed = urlparse(url)
+    ext = tldextract.extract(parsed.hostname or "")
 
-def get_whois_info(domain: str) -> Dict[str, Any]:
-    try:
-        w = whois.whois(domain)
-        return {
-            "domain_name": getattr(w, "domain_name", domain),
-            "registrar": getattr(w, "registrar", None),
-            "owner": getattr(w, "org", None),
-            "creation_date": _safe_date(getattr(w, "creation_date", None)),
-            "expiration_date": _safe_date(getattr(w, "expiration_date", None)),
-            "updated_date": _safe_date(getattr(w, "updated_date", None)),
-            "name_servers": getattr(w, "name_servers", None),
-        }
-    except Exception:
-        return rdap_lookup(domain)
+    if not ext.domain or not ext.suffix:
+        return ""
+
+    return f"{ext.domain}.{ext.suffix}"
 
 
-# =====================================================
-# DNS
-# =====================================================
-
-def dns_lookup(domain: str) -> Dict[str, Optional[List[Dict[str, Any]]]]:
+# ----------------------------
+# DNS LOOKUP (SOFT)
+# ----------------------------
+def dns_lookup(domain: str) -> Dict[str, Any]:
     out = {"A": None, "MX": None, "NS": None}
     resolver = dns.resolver.Resolver()
-    resolver.timeout = 3
     resolver.lifetime = 5
 
     try:
@@ -133,44 +75,92 @@ def dns_lookup(domain: str) -> Dict[str, Optional[List[Dict[str, Any]]]]:
     return out
 
 
-# =====================================================
-# ANALYSIS
-# =====================================================
+# ----------------------------
+# HTTP ACCESSIBILITY (SOFT)
+# ----------------------------
+def is_http_accessible(url: str) -> bool:
+    try:
+        if "://" not in url:
+            url = "http://" + url
 
+        r = requests.head(
+            url,
+            allow_redirects=True,
+            timeout=5,
+            headers={"User-Agent": "CyberSentinelAI/1.0"},
+        )
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+# ----------------------------
+# WHOIS + RDAP FALLBACK
+# ----------------------------
+def _safe_date(x):
+    if isinstance(x, list):
+        x = x[0]
+    if isinstance(x, str):
+        try:
+            return datetime.fromisoformat(x)
+        except Exception:
+            return None
+    return x
+
+
+def get_whois_info(domain: str) -> Dict[str, Any]:
+    try:
+        w = whois.whois(domain)
+        return {
+            "domain_name": domain,
+            "registrar": getattr(w, "registrar", None),
+            "creation_date": _safe_date(getattr(w, "creation_date", None)),
+        }
+    except Exception:
+        return {"error": "WHOIS lookup failed"}
+
+
+# ----------------------------
+# DOMAIN AGE
+# ----------------------------
 def calculate_domain_age_days(creation_date):
     if not creation_date:
         return None
+
     if creation_date.tzinfo:
         creation_date = creation_date.astimezone(timezone.utc).replace(tzinfo=None)
+
     return (datetime.utcnow() - creation_date).days
 
 
-def calculate_risk_score(model_prob: float, domain_age_days: Optional[int], dns_data: Dict[str, Any]) -> float:
-    risk = model_prob
-    if domain_age_days is not None and domain_age_days < 30:
-        risk += 0.2
-    if not dns_data.get("MX"):
-        risk += 0.1
-    return min(risk, 1.0)
-
-
-# =====================================================
-# FORMATTING
-# =====================================================
-
+# ----------------------------
+# FORMATTERS
+# ----------------------------
 def explain_whois(whois_data: Dict[str, Any], age_days: Optional[int]) -> str:
-    if not whois_data or "error" in whois_data:
-        return "WHOIS lookup unavailable."
-    return f"Domain {whois_data.get('domain_name')} | Age: {age_days} days"
+    if "error" in whois_data:
+        return "WHOIS lookup failed or not available."
+
+    if age_days is None:
+        return "Domain age information unavailable."
+
+    if age_days < 30:
+        return f"Domain is very new ({age_days} days) — higher risk."
+    if age_days < 365:
+        return f"Domain is moderately new ({age_days} days)."
+
+    return f"Domain is well-established ({age_days} days old)."
 
 
 def format_dns_readable(dns_data: Dict[str, Any]) -> str:
     lines = []
-    for k in ["A", "MX", "NS"]:
-        lines.append(f"{k} Records:")
-        if not dns_data.get(k):
+
+    for record in ["A", "MX", "NS"]:
+        lines.append(f"{record} Records:")
+        if not dns_data.get(record):
             lines.append(" - ❌ None found")
         else:
-            for r in dns_data[k]:
+            for r in dns_data[record]:
                 lines.append(f" - {r}")
+        lines.append("")
+
     return "\n".join(lines)
