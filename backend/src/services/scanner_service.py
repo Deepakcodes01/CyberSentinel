@@ -1,166 +1,121 @@
-import whois
-import dns.resolver
-import requests
-import tldextract
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
-from urllib.parse import urlparse
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+from src.utils import (
+    get_whois_info,
+    dns_lookup,
+    calculate_domain_age_days,
+    explain_whois,
+    format_dns_readable,
+    is_valid_url_syntax,
+    extract_domain,
+    is_http_accessible,
+)
+
+from src.db.supabase_client import supabase
 
 
 # ----------------------------
-# URL SYNTAX VALIDATION
+# LOAD MODEL ONCE
 # ----------------------------
-def is_valid_url_syntax(url: str) -> bool:
-    if not url or " " in url:
-        return False
+MODEL_PATH = "models/urlbert-multiclass"
 
-    if "://" not in url:
-        url = "http://" + url
+print("🔄 Loading URLBERT model...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+model.eval()
+print("✅ Model loaded successfully")
 
-    parsed = urlparse(url)
-    return bool(parsed.hostname and "." in parsed.hostname)
-
-
-# ----------------------------
-# CANONICAL DOMAIN EXTRACTION
-# ----------------------------
-def extract_domain(url: str) -> str:
-    """
-    cnn.com
-    www.cnn.com
-    https://www.cnn.com/news
-    → cnn.com
-    """
-    if not url:
-        return ""
-
-    if "://" not in url:
-        url = "http://" + url
-
-    parsed = urlparse(url)
-    ext = tldextract.extract(parsed.hostname or "")
-
-    if not ext.domain or not ext.suffix:
-        return ""
-
-    return f"{ext.domain}.{ext.suffix}"
+id2label = {
+    0: "benign",
+    1: "phishing",
+    2: "defacement",
+    3: "malware",
+}
 
 
 # ----------------------------
-# DNS LOOKUP (SOFT)
+# URL SCANNER SERVICE
 # ----------------------------
-def dns_lookup(domain: str) -> Dict[str, Any]:
-    out = {"A": None, "MX": None, "NS": None}
-    resolver = dns.resolver.Resolver()
-    resolver.lifetime = 5
+class URLScannerService:
+    def __init__(self, popular_domains: set):
+        self.popular_domains = popular_domains
 
-    try:
-        answers = resolver.resolve(domain, "A")
-        out["A"] = [{"address": a.address} for a in answers]
-    except Exception:
-        pass
+    def scan(self, url: str) -> dict:
+        if not url:
+            return {"error": "URL is required"}
 
-    try:
-        answers = resolver.resolve(domain, "MX")
-        out["MX"] = [{"exchange": str(r.exchange), "priority": r.preference} for r in answers]
-    except Exception:
-        pass
+        if not is_valid_url_syntax(url):
+            return {"error": "Invalid URL format"}
 
-    try:
-        answers = resolver.resolve(domain, "NS")
-        out["NS"] = [{"target": str(r.target)} for r in answers]
-    except Exception:
-        pass
+        domain = extract_domain(url)
+        is_trusted = domain in self.popular_domains
 
-    return out
+        # Soft checks
+        dns_data = dns_lookup(domain)
+        http_reachable = is_http_accessible(url)
 
+        # WHOIS ALWAYS RUNS
+        whois_data = get_whois_info(domain)
+        age_days = calculate_domain_age_days(whois_data.get("creation_date"))
 
-# ----------------------------
-# HTTP ACCESSIBILITY (SOFT)
-# ----------------------------
-def is_http_accessible(url: str) -> bool:
-    try:
-        if "://" not in url:
-            url = "http://" + url
+        # AI prediction
+        inputs = tokenizer(url, return_tensors="pt", truncation=True)
+        with torch.no_grad():
+            outputs = model(**inputs)
 
-        r = requests.head(
-            url,
-            allow_redirects=True,
-            timeout=5,
-            headers={"User-Agent": "CyberSentinelAI/1.0"},
-        )
-        return r.status_code < 500
-    except Exception:
-        return False
+        logits = outputs.logits
+        pred = torch.argmax(logits, dim=1).item()
+        url_type = id2label[pred]
 
+        confidence = torch.softmax(logits, dim=1)[0][pred].item()
 
-# ----------------------------
-# WHOIS + RDAP FALLBACK
-# ----------------------------
-def _safe_date(x):
-    if isinstance(x, list):
-        x = x[0]
-    if isinstance(x, str):
-        try:
-            return datetime.fromisoformat(x)
-        except Exception:
-            return None
-    return x
-
-
-def get_whois_info(domain: str) -> Dict[str, Any]:
-    try:
-        w = whois.whois(domain)
-        return {
-            "domain_name": domain,
-            "registrar": getattr(w, "registrar", None),
-            "creation_date": _safe_date(getattr(w, "creation_date", None)),
-        }
-    except Exception:
-        return {"error": "WHOIS lookup failed"}
-
-
-# ----------------------------
-# DOMAIN AGE
-# ----------------------------
-def calculate_domain_age_days(creation_date):
-    if not creation_date:
-        return None
-
-    if creation_date.tzinfo:
-        creation_date = creation_date.astimezone(timezone.utc).replace(tzinfo=None)
-
-    return (datetime.utcnow() - creation_date).days
-
-
-# ----------------------------
-# FORMATTERS
-# ----------------------------
-def explain_whois(whois_data: Dict[str, Any], age_days: Optional[int]) -> str:
-    if "error" in whois_data:
-        return "WHOIS lookup failed or not available."
-
-    if age_days is None:
-        return "Domain age information unavailable."
-
-    if age_days < 30:
-        return f"Domain is very new ({age_days} days) — higher risk."
-    if age_days < 365:
-        return f"Domain is moderately new ({age_days} days)."
-
-    return f"Domain is well-established ({age_days} days old)."
-
-
-def format_dns_readable(dns_data: Dict[str, Any]) -> str:
-    lines = []
-
-    for record in ["A", "MX", "NS"]:
-        lines.append(f"{record} Records:")
-        if not dns_data.get(record):
-            lines.append(" - ❌ None found")
+        # Risk logic
+        if url_type == "benign":
+            risk_score = 0.1
+            risk_level = "LOW"
+        elif url_type == "defacement":
+            risk_score = 0.6
+            risk_level = "MEDIUM"
+        elif url_type == "phishing":
+            risk_score = 0.8
+            risk_level = "HIGH"
         else:
-            for r in dns_data[record]:
-                lines.append(f" - {r}")
-        lines.append("")
+            risk_score = 0.9
+            risk_level = "HIGH"
 
-    return "\n".join(lines)
+        trust_status = "Trusted" if is_trusted and risk_score < 0.3 else "Untrusted"
+
+        verdict = (
+            "This is a trusted and well-established domain."
+            if trust_status == "Trusted"
+            else "This URL may pose a security risk."
+        )
+
+        return {
+            "domain": domain,
+            "trust_status": trust_status,
+            "url_type": url_type,
+            "risk_level": risk_level,
+            "risk_score": round(risk_score, 2),
+            "reachable": http_reachable,
+            "verdict": verdict,
+            "whois_summary": explain_whois(whois_data, age_days),
+            "dns_summary": format_dns_readable(dns_data),
+        }
+
+
+# ----------------------------
+# SAVE RESULT (OPTIONAL)
+# ----------------------------
+def save_scan(url: str, result: dict):
+    try:
+        supabase.table("url_scans").insert({
+            "url": url,
+            "domain": result.get("domain"),
+            "risk_score": result.get("risk_score"),
+            "trust_status": result.get("trust_status"),
+            "url_type": result.get("url_type"),
+        }).execute()
+    except Exception as e:
+        print("⚠️ Failed to save scan:", e)
