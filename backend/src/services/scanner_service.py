@@ -55,7 +55,7 @@ class URLScannerService:
         dns_data = dns_lookup(domain)
         http_reachable = is_http_accessible(url)
 
-        # WHOIS ALWAYS RUNS
+        # WHOIS
         whois_data = get_whois_info(domain)
         age_days = calculate_domain_age_days(whois_data.get("creation_date"))
 
@@ -67,24 +67,54 @@ class URLScannerService:
         logits = outputs.logits
         pred = torch.argmax(logits, dim=1).item()
         url_type = id2label[pred]
-
         confidence = torch.softmax(logits, dim=1)[0][pred].item()
 
-        # Risk logic
-        if url_type == "benign":
-            risk_score = 0.1
-            risk_level = "LOW"
-        elif url_type == "defacement":
-            risk_score = 0.6
-            risk_level = "MEDIUM"
-        elif url_type == "phishing":
-            risk_score = 0.8
-            risk_level = "HIGH"
-        else:
-            risk_score = 0.9
-            risk_level = "HIGH"
+        # ----------------------------
+        # WEIGHTED RISK SCORING
+        # ----------------------------
+        risk_score = 0.0
 
-        trust_status = "Trusted" if is_trusted and risk_score < 0.3 else "Untrusted"
+        # ML contribution
+        if url_type != "benign":
+            risk_score += min(0.4, confidence)
+
+        # Domain age
+        if age_days is not None:
+            if age_days < 30:
+                risk_score += 0.3
+            elif age_days < 365:
+                risk_score += 0.15
+            else:
+                risk_score -= 0.3
+
+        # DNS stability
+        if dns_data.get("A"):
+            risk_score -= 0.15
+        if dns_data.get("MX"):
+            risk_score -= 0.1
+        if dns_data.get("NS"):
+            risk_score -= 0.1
+
+        # HTTP reachability
+        if http_reachable:
+            risk_score -= 0.1
+
+        # Popular domain bonus
+        if is_trusted:
+            risk_score -= 0.2
+
+        # Clamp
+        risk_score = max(0.0, min(1.0, risk_score))
+
+        # Risk level
+        if risk_score >= 0.7:
+            risk_level = "HIGH"
+        elif risk_score >= 0.4:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        trust_status = "Trusted" if risk_score < 0.4 else "Untrusted"
 
         verdict = (
             "This is a trusted and well-established domain."
