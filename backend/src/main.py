@@ -44,8 +44,4 @@ def root():
 def scan(url: str):
     result = scanner.scan(url)
 
-    # Save only valid scan results
-    if "error" not in result:
-        save_scan(url, result)
-
     return result
