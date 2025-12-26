@@ -21,6 +21,9 @@ def is_valid_url_syntax(url: str) -> bool:
         return bool(parsed.netloc)
     except Exception:
         return False
+        
+def normalize_domain(domain: str) -> str:
+    return domain[4:] if domain.startswith("www.") else domain
 
 
 # ----------------------------
