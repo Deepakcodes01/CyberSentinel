@@ -2,7 +2,7 @@ import dns.resolver
 import requests
 import whois
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # ----------------------------
@@ -69,14 +69,29 @@ def get_whois_info(domain: str) -> dict:
         return {}
 
 
+
+
 def calculate_domain_age_days(creation_date):
     if not creation_date:
         return None
+
+    # WHOIS sometimes returns a list
     if isinstance(creation_date, list):
         creation_date = creation_date[0]
+
     if not isinstance(creation_date, datetime):
         return None
-    return (datetime.utcnow() - creation_date).days
+
+    # Convert creation_date to UTC if timezone-aware
+    if creation_date.tzinfo is not None:
+        creation_date = creation_date.astimezone(timezone.utc)
+    else:
+        creation_date = creation_date.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+
+    return (now - creation_date).days
+
 
 
 def explain_whois(whois_data: dict, age_days: int | None) -> str:
