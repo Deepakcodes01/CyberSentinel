@@ -1,166 +1,128 @@
-import whois
 import dns.resolver
 import requests
-import tldextract
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+import whois
 from urllib.parse import urlparse
+from datetime import datetime
 
 
 # ----------------------------
-# URL SYNTAX VALIDATION
-# ----------------------------
-def is_valid_url_syntax(url: str) -> bool:
-    if not url or " " in url:
-        return False
-
-    if "://" not in url:
-        url = "http://" + url
-
-    parsed = urlparse(url)
-    return bool(parsed.hostname and "." in parsed.hostname)
-
-
-# ----------------------------
-# CANONICAL DOMAIN EXTRACTION
+# URL HELPERS
 # ----------------------------
 def extract_domain(url: str) -> str:
-    """
-    cnn.com
-    www.cnn.com
-    https://www.cnn.com/news
-    → cnn.com
-    """
-    if not url:
-        return ""
-
-    if "://" not in url:
+    if not url.startswith("http"):
         url = "http://" + url
-
     parsed = urlparse(url)
-    ext = tldextract.extract(parsed.hostname or "")
-
-    if not ext.domain or not ext.suffix:
-        return ""
-
-    return f"{ext.domain}.{ext.suffix}"
+    return parsed.netloc.lower()
 
 
-# ----------------------------
-# DNS LOOKUP (SOFT)
-# ----------------------------
-def dns_lookup(domain: str) -> Dict[str, Any]:
-    out = {"A": None, "MX": None, "NS": None}
-    resolver = dns.resolver.Resolver()
-    resolver.lifetime = 5
-
+def is_valid_url_syntax(url: str) -> bool:
     try:
-        answers = resolver.resolve(domain, "A")
-        out["A"] = [{"address": a.address} for a in answers]
+        parsed = urlparse(url if url.startswith("http") else "http://" + url)
+        return bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+# ----------------------------
+# DNS
+# ----------------------------
+def dns_lookup(domain: str) -> dict:
+    records = {"A": [], "MX": [], "NS": []}
+    try:
+        records["A"] = [str(r) for r in dns.resolver.resolve(domain, "A")]
     except Exception:
         pass
 
     try:
-        answers = resolver.resolve(domain, "MX")
-        out["MX"] = [{"exchange": str(r.exchange), "priority": r.preference} for r in answers]
+        records["MX"] = [str(r.exchange) for r in dns.resolver.resolve(domain, "MX")]
     except Exception:
         pass
 
     try:
-        answers = resolver.resolve(domain, "NS")
-        out["NS"] = [{"target": str(r.target)} for r in answers]
+        records["NS"] = [str(r) for r in dns.resolver.resolve(domain, "NS")]
     except Exception:
         pass
 
-    return out
+    return records
 
 
 # ----------------------------
-# HTTP ACCESSIBILITY (SOFT)
+# HTTP
 # ----------------------------
-def is_http_accessible(url: str) -> bool:
+def is_http_accessible(url: str, timeout: int = 5) -> bool:
     try:
-        if "://" not in url:
+        if not url.startswith("http"):
             url = "http://" + url
-
-        r = requests.head(
-            url,
-            allow_redirects=True,
-            timeout=5,
-            headers={"User-Agent": "CyberSentinelAI/1.0"},
-        )
+        r = requests.head(url, allow_redirects=True, timeout=timeout)
         return r.status_code < 500
     except Exception:
         return False
 
 
 # ----------------------------
-# WHOIS + RDAP FALLBACK
+# WHOIS
 # ----------------------------
-def _safe_date(x):
-    if isinstance(x, list):
-        x = x[0]
-    if isinstance(x, str):
-        try:
-            return datetime.fromisoformat(x)
-        except Exception:
-            return None
-    return x
-
-
-def get_whois_info(domain: str) -> Dict[str, Any]:
+def get_whois_info(domain: str) -> dict:
     try:
-        w = whois.whois(domain)
-        return {
-            "domain_name": domain,
-            "registrar": getattr(w, "registrar", None),
-            "creation_date": _safe_date(getattr(w, "creation_date", None)),
-        }
+        return whois.whois(domain)
     except Exception:
-        return {"error": "WHOIS lookup failed"}
+        return {}
 
 
-# ----------------------------
-# DOMAIN AGE
-# ----------------------------
 def calculate_domain_age_days(creation_date):
     if not creation_date:
         return None
-
-    if creation_date.tzinfo:
-        creation_date = creation_date.astimezone(timezone.utc).replace(tzinfo=None)
-
+    if isinstance(creation_date, list):
+        creation_date = creation_date[0]
+    if not isinstance(creation_date, datetime):
+        return None
     return (datetime.utcnow() - creation_date).days
+
+
+def explain_whois(whois_data: dict, age_days: int | None) -> str:
+    if not whois_data:
+        return "WHOIS information not available."
+    if age_days is None:
+        return "Domain age could not be determined."
+    return f"Domain registered {age_days} days ago."
 
 
 # ----------------------------
 # FORMATTERS
 # ----------------------------
-def explain_whois(whois_data: Dict[str, Any], age_days: Optional[int]) -> str:
-    if "error" in whois_data:
-        return "WHOIS lookup failed or not available."
+def format_dns_readable(dns_data: dict) -> str:
+    if not dns_data:
+        return "DNS Information:\nNo DNS records found."
 
-    if age_days is None:
-        return "Domain age information unavailable."
+    lines = ["DNS Information:\n"]
 
-    if age_days < 30:
-        return f"Domain is very new ({age_days} days) — higher risk."
-    if age_days < 365:
-        return f"Domain is moderately new ({age_days} days)."
-
-    return f"Domain is well-established ({age_days} days old)."
-
-
-def format_dns_readable(dns_data: Dict[str, Any]) -> str:
-    lines = []
-
-    for record in ["A", "MX", "NS"]:
-        lines.append(f"{record} Records:")
-        if not dns_data.get(record):
-            lines.append(" - ❌ None found")
-        else:
-            for r in dns_data[record]:
-                lines.append(f" - {r}")
+    # A Records
+    if dns_data.get("A"):
+        lines.append("A Records:")
+        for a in dns_data["A"]:
+            lines.append(f"- {{'address': '{a}'}}")
         lines.append("")
 
-    return "\n".join(lines)
+    # MX Records
+    if dns_data.get("MX"):
+        lines.append("MX Records:")
+        for mx in dns_data["MX"]:
+            if isinstance(mx, dict):
+                exchange = mx.get("exchange")
+                priority = mx.get("priority")
+                lines.append(
+                    f"- {{'exchange': '{exchange}', 'priority': {priority}}}"
+                )
+            else:
+                lines.append(f"- {mx}")
+        lines.append("")
+
+    # NS Records
+    if dns_data.get("NS"):
+        lines.append("NS Records:")
+        for ns in dns_data["NS"]:
+            lines.append(f"- {{'target': '{ns}'}}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
