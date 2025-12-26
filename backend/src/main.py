@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.services.scanner_service import URLScannerService, save_scan
+from src.services.scanner_service import URLScannerService
 from src.repositories.popular_repo import PopularDomainRepository
 
 app = FastAPI(
