@@ -1,76 +1,51 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from src.services.scanner_service import URLScannerService, save_scan
-
 from src.repositories.popular_repo import PopularDomainRepository
 
-# =========================================================
-# FastAPI App Configuration
-# =========================================================
 app = FastAPI(
     title="CyberSentinel AI",
     description="AI-powered malicious URL detection and threat intelligence system",
     version="1.0.0",
 )
 
-# =========================================================
-# CORS Configuration (Frontend access)
-# =========================================================
+# ----------------------------
+# CORS CONFIGURATION
+# ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================================================
-# Initialize Services (RUNS ONCE)
-# =========================================================
+# ----------------------------
+# INITIALIZE SERVICES
+# ----------------------------
 repo = PopularDomainRepository()
 scanner = URLScannerService(repo.domains)
 
-# =========================================================
-# Health Check Endpoint
-# =========================================================
+# ----------------------------
+# ROOT ENDPOINT
+# ----------------------------
 @app.get("/")
 def root():
     return {
         "status": "running",
-        "message": "CyberSentinel AI backend is live",
+        "message": "AI Malicious URL Detector API is live",
         "usage": "/scan?url=https://example.com"
     }
 
-# =========================================================
-# Scan Endpoint
-# =========================================================
+# ----------------------------
+# SCAN ENDPOINT
+# ----------------------------
 @app.get("/scan")
-def scan(
-    url: str = Query(..., description="URL to analyze for malicious behavior")
-):
-    """
-    Scans a URL using:
-    - Syntax validation
-    - DNS + WHOIS checks
-    - AI (URLBERT multi-class model)
-    """
-
+def scan(url: str):
     result = scanner.scan(url)
 
-    # -----------------------------------------------------
-    # If validation failed, DO NOT save to database
-    # -----------------------------------------------------
-    if "error" in result:
-        return result
-
-    # -----------------------------------------------------
-    # Save only valid scans
-    # -----------------------------------------------------
-    try:
+    # Save only valid scan results
+    if "error" not in result:
         save_scan(url, result)
-    except Exception as e:
-        # Do NOT crash API if DB fails
-        print("⚠️ Supabase save failed:", e)
 
     return result
