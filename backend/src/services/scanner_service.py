@@ -51,31 +51,60 @@ class URLScannerService:
         domain = extract_domain(url)
         is_trusted = domain in self.popular_domains
 
-        # Soft checks
+        # ----------------------------
+        # 1️⃣ INTERNET EXISTENCE CHECK
+        # ----------------------------
         dns_data = dns_lookup(domain)
         http_reachable = is_http_accessible(url)
 
-        # WHOIS
+        exists_on_internet = bool(dns_data) and http_reachable
+
+        if not exists_on_internet:
+            return {
+                "domain": domain,
+                "trust_status": "Untrusted",
+                "url_type": "non-existent",
+                "risk_level": "HIGH",
+                "risk_score": 1.0,
+                "reachable": False,
+                "verdict": "This URL does not exist on the internet.",
+                "whois_summary": "WHOIS data not available.",
+                "dns_summary": format_dns_readable(dns_data),
+            }
+
+        # ----------------------------
+        # 2️⃣ WHOIS
+        # ----------------------------
         whois_data = get_whois_info(domain)
         age_days = calculate_domain_age_days(whois_data.get("creation_date"))
 
-        # AI prediction
+        # ----------------------------
+        # 3️⃣ ML PREDICTION (ONLY IF EXISTS)
+        # ----------------------------
         inputs = tokenizer(url, return_tensors="pt", truncation=True)
         with torch.no_grad():
             outputs = model(**inputs)
 
         logits = outputs.logits
         pred = torch.argmax(logits, dim=1).item()
-        url_type = id2label[pred]
+        ml_label = id2label[pred]
         confidence = torch.softmax(logits, dim=1)[0][pred].item()
 
         # ----------------------------
-        # WEIGHTED RISK SCORING
+        # 4️⃣ TRUSTED DOMAIN OVERRIDE
+        # ----------------------------
+        if is_trusted:
+            url_type = "benign"
+        else:
+            url_type = ml_label
+
+        # ----------------------------
+        # 5️⃣ WEIGHTED RISK SCORING
         # ----------------------------
         risk_score = 0.0
 
-        # ML contribution
-        if url_type != "benign":
+        # ML contribution (ignored for trusted domains)
+        if url_type != "benign" and not is_trusted:
             risk_score += min(0.4, confidence)
 
         # Domain age
@@ -101,12 +130,14 @@ class URLScannerService:
 
         # Popular domain bonus
         if is_trusted:
-            risk_score -= 0.2
+            risk_score -= 0.4
 
         # Clamp
         risk_score = max(0.0, min(1.0, risk_score))
 
-        # Risk level
+        # ----------------------------
+        # 6️⃣ FINAL RISK LEVEL
+        # ----------------------------
         if risk_score >= 0.7:
             risk_level = "HIGH"
         elif risk_score >= 0.4:
